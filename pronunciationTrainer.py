@@ -3,9 +3,7 @@ import numpy as np
 import models as mo
 import WordMetrics
 import WordMatching as wm
-import epitran
 import ModelInterfaces as mi
-import AIModels
 import RuleBasedModels
 from string import punctuation
 import time
@@ -17,13 +15,10 @@ def getTrainer(language: str):
         print("Warning: attn_implementation not supported, falling back to default loading")
         asr_model = mo.getASRModel(language, use_whisper=True)
     
-    if language == 'de':
-        phonem_converter = RuleBasedModels.EpitranPhonemConverter(
-            epitran.Epitran('deu-Latn'))
-    elif language == 'en':
+    if language == 'en':
         phonem_converter = RuleBasedModels.EngPhonemConverter()
     else:
-        raise ValueError('Language not implemented')
+        raise ValueError('Only English (en) is supported')
 
     trainer = PronunciationTrainer(asr_model, phonem_converter)
     return trainer

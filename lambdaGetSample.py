@@ -1,11 +1,7 @@
-
 import pandas as pd
 import json
 import RuleBasedModels
-import epitran
 import random
-import pickle
-
 
 class TextDataset():
     def __init__(self, table):
@@ -13,18 +9,16 @@ class TextDataset():
         self.number_of_samples = len(table)
 
     def __getitem__(self, idx):
-
         line = [self.table_dataframe['sentence'].iloc[idx]]
         return line
 
     def __len__(self):
         return self.number_of_samples
 
-
 sample_folder = "./databases/"
 lambda_database = {}
 lambda_ipa_converter = {}
-available_languages = ['de', 'en']
+available_languages = ['en']
 
 for language in available_languages:
     df = pd.read_csv(sample_folder+'data_'+language+'.csv',delimiter=';')
@@ -33,45 +27,38 @@ for language in available_languages:
 
 lambda_translate_new_sample = False
 
-
 def lambda_handler(event, context):
-
     body = json.loads(event['body'])
-
     category = int(body['category'])
-
     language = body['language']
 
-    sample_in_category = False
+    if language != 'en':
+        return json.dumps({'error': 'Only English (en) is supported'})
 
-    while(not sample_in_category):
+    sample_in_category = False
+    while not sample_in_category:
         valid_sequence = False
         while not valid_sequence:
             try:
                 sample_idx = random.randint(0, len(lambda_database[language]))
-                current_transcript = lambda_database[language][
-                    sample_idx]
+                current_transcript = lambda_database[language][sample_idx]
                 valid_sequence = True
             except:
                 pass
 
-        sentence_category = getSentenceCategory(
-            current_transcript[0])
-
-        sample_in_category = (sentence_category ==
-                              category) or category == 0
+        sentence_category = getSentenceCategory(current_transcript[0])
+        sample_in_category = (sentence_category == category) or category == 0
 
     translated_trascript = ""
+    current_ipa = lambda_ipa_converter[language].convertToPhonem(current_transcript[0])
 
-    current_ipa = lambda_ipa_converter[language].convertToPhonem(
-        current_transcript[0])
-
-    result = {'real_transcript': current_transcript,
-              'ipa_transcript': current_ipa,
-              'transcript_translation': translated_trascript}
+    result = {
+        'real_transcript': current_transcript,
+        'ipa_transcript': current_ipa,
+        'transcript_translation': translated_trascript
+    }
 
     return json.dumps(result)
-
 
 def getSentenceCategory(sentence) -> int:
     number_of_words = len(sentence.split())
