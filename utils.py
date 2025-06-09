@@ -10,124 +10,180 @@ from langchain_groq import ChatGroq
 from langchain_core.runnables import RunnablePassthrough
 import edge_tts
 import pygame
+import re
+from langdetect import detect, DetectorFactory
+import uuid
+import json
+from flask import jsonify
+import nltk
+from pydub import AudioSegment
+
+nltk.download('words')  # Tải từ vựng để nhận diện
+
+DetectorFactory.seed = 0
 
 load_dotenv()
 
 groq_api_key = os.getenv("GROQ_API_KEY")
+audio_dir = "audio"  # Define audio directory
 
-def is_silence(data, max_amplitude_threshold=3000):
-    max_amplitude = np.max(np.abs(data))
-    return max_amplitude <= max_amplitude_threshold
+# Define CORS headers
+cors_headers = {"Access-Control-Allow-Origin": "*"}
 
-def record_audio_chunk(audio, stream, chunk_length=5):
-    print("Recording...")
-    frames = []
-    num_chunks = int(16000 / 1024 * chunk_length)
-    for _ in range(num_chunks):
-        data = stream.read(1024)
-        frames.append(data)
+def load_prompt(chat_mode: str = "general"):
+    if chat_mode == "topic_based":
+        return PromptTemplate.from_template("""
+       You are acting as a '{role}' for the topic '{topic}' in English. Respond naturally to the user's input with a relevant answer related to the topic, and follow up with a related question (max 150 words) to keep the conversation going. If the user's input is short (e.g., 'yes', 'no') or empty, ask a new question based on the topic. If the user says 'stop' or 'change topic', end or switch accordingly. Every 50 exchanges, ask if the user wants to continue, switch topics, or stop.
 
-    temp_file_path = './temp_audio_chunk.wav'
-    print("Writing...")
-    with wave.open(temp_file_path, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-        wf.setframerate(16000)
-        wf.writeframes(b''.join(frames))
+        Your role includes:
+        - Acting like a real person: If the user asks about locations (e.g., "Where is the restaurant?"), use their location data (if provided) or suggest realistic options. For other queries (e.g., weather, news), provide accurate answers if possible.
+        - Engaging with humor or encouragement (e.g., "Great job! Let’s keep practicing!").
 
-    try:
-        samplerate, data = wavfile.read(temp_file_path)
-        if is_silence(data):
-            os.remove(temp_file_path)
-            return True
-        else:
-            return False
-    except Exception as e:
-        print(f"Error while reading audio file: {e}")
-        return True
+        Previous conversation:
+        {chat_history}
 
-def load_whisper():
-    return whisper.load_model("tiny")
+        New human question: {question}
+        Response:
+        """)
+    else:  # chat_mode == "general"
+        return PromptTemplate.from_template("""
+        Your name is Emma. You are an AI conversational English teacher acting as '{role}'. The user has chosen the topic '{topic}' and must use English. Act naturally, respond to the user's question or input with a relevant answer in English, and always follow up with a related question (max 150 words) to keep the conversation going. If the user's input is short (e.g., 'yes', 'no') or empty, ask a new question based on the topic. If the user says 'stop' or 'change topic', end or switch accordingly. Every 50 exchanges, ask if the user wants to continue, switch topics, or stop.
 
-def transcribe_audio(model, file_path):
-    print("Transcribing...")
-    print("Current directory files:", os.listdir())
-    if os.path.isfile(file_path):
-        results = model.transcribe(file_path)
-        return results['text']
-    else:
-        return None
+        Your role includes:
+        - Acting like a real person: If the user asks about locations (e.g., "Where is the restaurant?"), use their location data (if provided) or suggest realistic options. For other queries (e.g., weather, news), provide accurate answers if possible.
+        - Engaging with humor or encouragement (e.g., "Great job! Let’s keep practicing!").
 
-def load_prompt():
-    return PromptTemplate.from_template("""
-    You are a AI conversational teacher acting as '{role}'. The user has chosen the topic '{topic}' and language '{language}'. Act naturally, respond to the user's question or input with a relevant answer, and always follow up with a related question (max 10 words) to keep the conversation going. If the user's input is short (e.g., 'yes', 'no') or empty, ask a new question based on the topic. If user says 'stop' or 'change topic', end or switch accordingly. Every 5 exchanges, ask if the user wants to continue, switch topics, or stop.
+        Previous conversation:
+        {chat_history}
 
-    Language-specific instructions:
-    - If language is 'en', respond naturally in English.
-    - If language is 'zh', respond in Mandarin Chinese, paying attention to tone and word order for natural conversation (e.g., "你想吃什么菜？").
-    - If language is 'ko', respond in Korean with polite forms (e.g., use '요' or '습니다' endings, like "어떤 음식을 드시고 싶으세요?").
-    - If language is 'ja', respond in Japanese with polite forms (e.g., use 'です/ます' endings, like "どのような料理がお好きですか？").
-    - If language is 'vi', respond in Vietnamese with natural tone and accents (e.g., "Bạn muốn ăn món gì?").
-
-    Previous conversation:
-    {chat_history}
-
-    New human question: {question}
-    Response:
-""")
+        New human question: {question}
+        Response:
+        """)
 
 def load_llm():
-    return ChatGroq(temperature=0, model_name="llama3-8b-8192", groq_api_key=groq_api_key)
+    return ChatGroq(temperature=0.81, model_name="llama3-8b-8192", groq_api_key=groq_api_key)
 
-def get_response_llm(user_question, memory, topic="", language="en", role="AI conversational teacher"):
-    prompt = load_prompt()
+def generate_audio(text: str, audio_path: str, language: str, topic: str, role: str):
+    try:
+        voice = "en-US-AriaNeural"
+        tts = edge_tts.Communicate(text, voice=voice)
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(tts.save(audio_path))
+        loop.close()
+        print(f"Audio generated with edge_tts at {audio_path}")
+        # Compress audio
+        audio = AudioSegment.from_file(audio_path, format="mp3")
+        compressed_path = audio_path.replace(".mp3", "_compressed.mp3")
+        audio.export(compressed_path, format="mp3", bitrate="32k")
+        os.remove(audio_path)
+        os.rename(compressed_path, audio_path)
+        print(f"Audio compressed at {audio_path}")
+    except Exception as e:
+        print(f"edge_tts failed: {str(e)}. Falling back to gTTS.")
+        from gtts import gTTS
+        tts = gTTS(text=text, lang=language, slow=False)
+        tts.save(audio_path)
+        # Compress audio
+        audio = AudioSegment.from_file(audio_path, format="mp3")
+        compressed_path = audio_path.replace(".mp3", "_compressed.mp3")
+        audio.export(compressed_path, format="mp3", bitrate="32k")
+        os.remove(audio_path)
+        os.rename(compressed_path, audio_path)
+        print(f"Audio generated and compressed with gTTS at {audio_path}")
+
+def get_response(user_text: str, memory, topic: str = "", language: str = "en", role: str = "AI conversational teacher", chat_mode: str = "general") -> str:
+    prompt = load_prompt(chat_mode=chat_mode)
     llm = load_llm()
-
-    print(f"Processing with topic: {topic}, language: {language}, role: {role}")
-    chat_history = []
+    print(f"Processing with topic: {topic}, language: {language}, role: {role}, chat_mode: {chat_mode}")
+    chat_history_str = ""
     if memory is not None:
         try:
-            chat_history = memory.load_memory_variables({})["chat_history"]
-            print(f"Memory chat_history: {chat_history}")
+            chat_history_str = memory.load_memory_variables({})["chat_history"]
+            print(f"Memory chat_history: {chat_history_str}")
         except KeyError as e:
-            print(f"Error accessing chat_history: {e}")
-            chat_history = []  # Fallback if chat_history doesn't exist
-
+            print(f"Error accessing chat_history: {e}. Defaulting to empty chat history.")
+            chat_history_str = ""
     chain = (
         {
             "question": RunnablePassthrough(),
             "topic": lambda x: topic,
-            "language": lambda x: language,
-            "chat_history": lambda x: chat_history,
+            "language": lambda x: "en",
+            "chat_history": lambda x: chat_history_str,
             "role": lambda x: role
         }
         | prompt
         | llm
     )
-
     try:
-        response = chain.invoke(user_question)
+        response = chain.invoke(user_text)
         return response.content
     except Exception as e:
         print(f"Error in LLM chain: {str(e)}")
-        raise
+        return "An internal error occurred. Please try again later."
 
-async def play_text_to_speech(text, language='en'):
-    voice = {
-        "en": "en-US-AriaNeural",
-        "vi": "vi-VN-AnNeural",
-        "ja": "ja-JP-NanamiNeural",
-        "ko": "ko-KR-SunHiNeural",
-        "zh": "zh-CN-XiaoxiaoNeural"
-    }.get(language, "en-US-AriaNeural")
+async def play_text_to_speech(text: str, language: str = 'en'):
+    voice = "en-US-AriaNeural"
     tts = edge_tts.Communicate(text, voice=voice)
     temp_audio_file = "temp_audio.mp3"
-    await tts.save(temp_audio_file)
-    pygame.mixer.init()
-    pygame.mixer.music.load(temp_audio_file)
-    pygame.mixer.music.play()
-    while pygame.mixer.music.get_busy():
-        pygame.time.Clock().tick(10)
-    pygame.mixer.music.stop()
-    pygame.mixer.quit()
-    os.remove(temp_audio_file)
+    try:
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        await tts.save(temp_audio_file)
+        loop.close()
+        pygame.mixer.init()
+        sound = pygame.mixer.Sound(temp_audio_file)
+        sound.play()
+        while pygame.mixer.get_busy():
+            pygame.time.Clock().tick(10)
+    except Exception as e:
+        print(f"Error playing text-to-speech: {e}")
+    finally:
+        if pygame.mixer.get_init():
+            pygame.mixer.quit()
+        if os.path.exists(temp_audio_file):
+            os.remove(temp_audio_file)
+
+if __name__ == "__main__":
+    class DummyMemory:
+        def load_memory_variables(self, variables):
+            return {"chat_history": "Human: Hi there!\nAI: Hello! How can I help you today?"}
+
+    dummy_memory = DummyMemory()
+
+    print("--- Test 1: Nonsensical input ---")
+    senseless_input = "jdasfskahsdadfsdjdasfskahsdadfsdjdasfskahsdadfsdjdasfskahsda"
+    response1 = get_response(senseless_input, dummy_memory, topic="Travel", language="en", role="English Teacher", chat_mode="general")
+    print(f"Response for senseless input: {response1}\n")
+
+    print("--- Test 2: Non-English input (Vietnamese) ---")
+    non_english_input = "Tôi muốn đi Hà Nội"
+    response2 = get_response(non_english_input, dummy_memory, topic="Travel", language="en", role="English Teacher", chat_mode="general")
+    print(f"Response for non-English input: {response2}\n")
+
+    print("--- Test 3: Valid English input ---")
+    valid_input = "What's the capital of France?"
+    response3 = get_response(valid_input, dummy_memory, topic="Geography", language="en", role="English Teacher", chat_mode="general")
+    print(f"Response for valid input: {response3}\n")
+
+    print("--- Test 4: Short valid input ---")
+    short_valid_input = "yes"
+    response4 = get_response(short_valid_input, dummy_memory, topic="Daily Life", language="English Teacher", role="en", chat_mode="general")
+    print(f"Response for short valid input: {response4}\n")
+
+    print("--- Test 5: Empty input ---")
+    empty_input = ""
+    response5 = get_response(empty_input, dummy_memory, topic="Daily Life", language="en", role="English Teacher", chat_mode="general")
+    print(f"Response for empty input: {response5}\n")
+
+    print("--- Test 6: 'stop' command ---")
+    stop_command = "stop"
+    response6 = get_response(stop_command, dummy_memory, topic="Daily Life", language="en", role="English Teacher", chat_mode="general")
+    print(f"Response for 'stop' command: {response6}\n")
+
+    print("--- Test 7: Non-English input (Chinese) ---")
+    chinese_input = "我想去北京"
+    response7 = get_response(chinese_input, dummy_memory, topic="Travel", language="en", role="English Teacher", chat_mode="general")
+    print(f"Response for Chinese input: {response7}\n")

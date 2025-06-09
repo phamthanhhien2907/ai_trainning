@@ -79,7 +79,7 @@ def getTTSModel(language: str) -> nn.Module:
         raise ValueError('Language not implemented')
     return model
 
-def getTranslationModel(language: str) -> nn.Module:
+# def getTranslationModel(language: str) -> nn.Module:
     from transformers import AutoTokenizer
     from transformers import AutoModelForSeq2SeqLM
     if language == 'de':
