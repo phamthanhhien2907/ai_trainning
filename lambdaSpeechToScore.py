@@ -174,6 +174,7 @@ def lambda_handler(event, context):
     logging.info(f"Time to post-process results: {time.time() - start}")
 
     accuracy = float(result['pronunciation_accuracy'])
+    print(accuracy)
     logging.info(f"Before adjustment - Pronunciation accuracy: {accuracy}")
     accuracy = max(0, accuracy)
     logging.info(f"After adjustment - Pronunciation accuracy: {accuracy}")
